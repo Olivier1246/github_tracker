@@ -21,7 +21,6 @@ impl AppState {
         }
     }
 
-    // Returns false if repo already exists
     pub fn add_repo(&mut self, config: RepoConfig) -> bool {
         let full = config.full_name();
         if self.repos.iter().any(|r| r.full_name() == full) {
@@ -34,6 +33,17 @@ impl AppState {
     pub fn remove_repo(&mut self, full_name: &str) {
         self.repos.retain(|r| r.full_name() != full_name);
         self.repo_states.remove(full_name);
+    }
+
+    pub fn toggle_notify(&mut self, full_name: &str, field: &str) {
+        if let Some(repo) = self.repos.iter_mut().find(|r| r.full_name() == full_name) {
+            match field {
+                "stars"    => repo.notify_stars    = !repo.notify_stars,
+                "forks"    => repo.notify_forks    = !repo.notify_forks,
+                "releases" => repo.notify_releases = !repo.notify_releases,
+                _ => {}
+            }
+        }
     }
 
     pub fn add_notification(&mut self, notif: Notification) {

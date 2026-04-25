@@ -6,21 +6,26 @@ use std::sync::{Arc, Mutex};
 use crate::config::save_repos;
 use crate::models::{Notification, NotificationKind, RepoConfig, RepoState};
 use crate::state::AppState;
+use crate::telegram::TelegramClient;
 
 pub async fn start_web_server(
     state: Arc<Mutex<AppState>>,
+    telegram: Arc<TelegramClient>,
     host: String,
     port: u16,
 ) -> std::io::Result<()> {
-    let data = web::Data::new(state);
+    let state_data = web::Data::new(state);
+    let telegram_data = web::Data::new(telegram);
     log::info!("Interface web disponible sur http://{}:{}", host, port);
 
     HttpServer::new(move || {
         App::new()
-            .app_data(data.clone())
+            .app_data(state_data.clone())
+            .app_data(telegram_data.clone())
             .route("/", web::get().to(dashboard))
             .route("/repos", web::post().to(add_repo))
             .route("/repos/remove", web::post().to(remove_repo))
+            .route("/repos/toggle", web::post().to(toggle_notification))
             .route("/api/repos", web::get().to(api_repos))
             .route("/api/notifications", web::get().to(api_notifications))
     })
@@ -29,7 +34,7 @@ pub async fn start_web_server(
     .await
 }
 
-// ── Form structs ─────────────────────────────────────────────────────────────
+// ── Form structs ──────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
 struct AddRepoForm {
@@ -41,18 +46,22 @@ struct RemoveRepoForm {
     full_name: String,
 }
 
-// ── URL parser ───────────────────────────────────────────────────────────────
+#[derive(Deserialize)]
+struct ToggleForm {
+    full_name: String,
+    field: String,
+}
+
+// ── URL parser ────────────────────────────────────────────────────────────────
 
 fn parse_github_url(input: &str) -> Option<(String, String)> {
     let s = input.trim().trim_end_matches('/');
     let s = s.strip_suffix(".git").unwrap_or(s);
-
     let path = s
         .strip_prefix("https://github.com/")
         .or_else(|| s.strip_prefix("http://github.com/"))
         .or_else(|| s.strip_prefix("github.com/"))
         .unwrap_or(s);
-
     let parts: Vec<&str> = path.splitn(3, '/').collect();
     if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
         Some((parts[0].to_string(), parts[1].to_string()))
@@ -61,50 +70,82 @@ fn parse_github_url(input: &str) -> Option<(String, String)> {
     }
 }
 
-// ── Handlers ─────────────────────────────────────────────────────────────────
+// ── Handlers ──────────────────────────────────────────────────────────────────
 
 async fn add_repo(
     state: web::Data<Arc<Mutex<AppState>>>,
+    telegram: web::Data<Arc<TelegramClient>>,
     form: web::Form<AddRepoForm>,
 ) -> impl Responder {
-    match parse_github_url(&form.url) {
-        None => {
-            log::warn!("URL invalide reçue : {}", form.url);
-        }
-        Some((owner, repo)) => {
-            let config = RepoConfig {
-                owner: owner.clone(),
-                repo: repo.clone(),
-                notify_releases: true,
-                notify_stars: true,
-                notify_forks: false,
-            };
-            let repos = {
-                let mut s = state.lock().unwrap();
-                if s.add_repo(config) {
-                    log::info!("Dépôt ajouté : {}/{}", owner, repo);
-                } else {
-                    log::warn!("Dépôt déjà surveillé : {}/{}", owner, repo);
-                }
-                s.repos.clone()
-            };
-            if let Err(e) = save_repos("repos.toml", &repos) {
+    if let Some((owner, repo)) = parse_github_url(&form.url) {
+        let config = RepoConfig {
+            owner: owner.clone(),
+            repo: repo.clone(),
+            notify_releases: true,
+            notify_stars: true,
+            notify_forks: false,
+        };
+        let full_name = format!("{}/{}", owner, repo);
+        let repos = {
+            let mut s = state.lock().unwrap();
+            let added = s.add_repo(config);
+            if added {
+                log::info!("Dépôt ajouté : {}", full_name);
+            } else {
+                log::warn!("Dépôt déjà surveillé : {}", full_name);
+            }
+            (added, s.repos.clone())
+        };
+        if repos.0 {
+            if let Err(e) = save_repos("repos.toml", &repos.1) {
                 log::error!("Impossible de sauvegarder repos.toml : {}", e);
             }
+            let msg = format!(
+                "➕ <b>Nouveau dépôt surveillé</b>\n<a href=\"https://github.com/{n}\">{n}</a>",
+                n = full_name
+            );
+            if let Err(e) = telegram.send_message(&msg).await {
+                log::error!("Échec envoi Telegram : {}", e);
+            }
         }
+    } else {
+        log::warn!("URL invalide reçue : {}", form.url);
     }
-
     redirect("/")
 }
 
 async fn remove_repo(
     state: web::Data<Arc<Mutex<AppState>>>,
+    telegram: web::Data<Arc<TelegramClient>>,
     form: web::Form<RemoveRepoForm>,
+) -> impl Responder {
+    let full_name = form.full_name.clone();
+    let repos = {
+        let mut s = state.lock().unwrap();
+        s.remove_repo(&full_name);
+        log::info!("Dépôt supprimé : {}", full_name);
+        s.repos.clone()
+    };
+    if let Err(e) = save_repos("repos.toml", &repos) {
+        log::error!("Impossible de sauvegarder repos.toml : {}", e);
+    }
+    let msg = format!(
+        "➖ <b>Dépôt supprimé</b>\n<a href=\"https://github.com/{n}\">{n}</a>",
+        n = full_name
+    );
+    if let Err(e) = telegram.send_message(&msg).await {
+        log::error!("Échec envoi Telegram : {}", e);
+    }
+    redirect("/")
+}
+
+async fn toggle_notification(
+    state: web::Data<Arc<Mutex<AppState>>>,
+    form: web::Form<ToggleForm>,
 ) -> impl Responder {
     let repos = {
         let mut s = state.lock().unwrap();
-        s.remove_repo(&form.full_name);
-        log::info!("Dépôt supprimé : {}", form.full_name);
+        s.toggle_notify(&form.full_name, &form.field);
         s.repos.clone()
     };
     if let Err(e) = save_repos("repos.toml", &repos) {
@@ -119,7 +160,7 @@ fn redirect(location: &str) -> HttpResponse {
         .finish()
 }
 
-// ── Dashboard ────────────────────────────────────────────────────────────────
+// ── Dashboard ─────────────────────────────────────────────────────────────────
 
 async fn dashboard(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     let (repos_html, notifs_html, repo_count, notif_count) = {
@@ -132,7 +173,7 @@ async fn dashboard(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
             s.repos.iter().map(|cfg| {
                 let full_name = cfg.full_name();
                 match s.repo_states.get(&full_name) {
-                    Some(repo) => render_card(repo, &full_name),
+                    Some(repo) => render_card(repo, cfg),
                     None       => render_pending_card(&full_name),
                 }
             }).collect()
@@ -165,12 +206,12 @@ async fn dashboard(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
   .subtitle{{color:#8b949e;font-size:.8rem;margin-top:2px}}
   main{{max-width:1280px;margin:0 auto;padding:24px 24px 80px}}
   h2{{font-size:1rem;color:#f0f6fc;margin:24px 0 12px;padding-bottom:8px;border-bottom:1px solid #21262d;font-weight:600}}
-  .add-wrap{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:20px;display:flex;gap:10px;align-items:center}}
-  .add-wrap form{{display:flex;flex:1;gap:10px}}
+  .add-wrap{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:14px 16px;margin-bottom:20px}}
+  .add-wrap form{{display:flex;gap:10px}}
   .url-input{{flex:1;background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:8px 12px;color:#c9d1d9;font-size:.9rem;outline:none;min-width:0}}
   .url-input:focus{{border-color:#388bfd}}
   .url-input::placeholder{{color:#484f58}}
-  .btn-add{{background:#238636;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-weight:600;white-space:nowrap;font-size:.9rem}}
+  .btn-add{{background:#238636;color:#fff;border:none;border-radius:6px;padding:8px 18px;cursor:pointer;font-weight:600;white-space:nowrap}}
   .btn-add:hover{{background:#2ea043}}
   .repos-grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px;margin-bottom:8px}}
   .card{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;transition:border-color .15s}}
@@ -184,9 +225,13 @@ async fn dashboard(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
   .desc{{color:#8b949e;font-size:.8rem;margin-bottom:10px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
   .pending-msg{{color:#8b949e;font-style:italic;font-size:.85rem;margin:12px 0}}
   .stats{{display:flex;gap:8px;margin-bottom:10px}}
+  .stat-form{{flex:1;display:flex}}
+  .stat-btn{{all:unset;display:flex;flex-direction:column;align-items:center;background:#0d1117;border-radius:6px;padding:8px 6px;flex:1;gap:2px;cursor:pointer;border:1px solid transparent;transition:border-color .15s;width:100%}}
+  .stat-btn:hover{{border-color:#388bfd}}
+  .stat-off{{opacity:.4}}
   .stat{{display:flex;flex-direction:column;align-items:center;background:#0d1117;border-radius:6px;padding:8px 6px;flex:1;gap:2px}}
   .val{{font-weight:700;color:#f0f6fc;font-size:.95rem}}
-  .lbl{{color:#6e7681;font-size:.7rem}}
+  .lbl{{color:#6e7681;font-size:.7rem;text-align:center}}
   .meta{{color:#6e7681;font-size:.72rem}}
   .notifs-wrap{{background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden}}
   .notif{{display:grid;grid-template-columns:auto auto 1fr auto;gap:10px;align-items:center;padding:11px 16px;border-bottom:1px solid #21262d;font-size:.85rem}}
@@ -248,9 +293,22 @@ async fn dashboard(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
         .body(html)
 }
 
-fn render_card(repo: &RepoState, full_name: &str) -> String {
+fn render_card(repo: &RepoState, cfg: &RepoConfig) -> String {
+    let full_name = &repo.full_name;
     let release = repo.latest_release.as_deref().unwrap_or("—");
     let desc = repo.description.as_deref().unwrap_or("Aucune description");
+
+    let (star_bell, star_class, star_tip) = if cfg.notify_stars {
+        ("&#128276;", "stat-btn", "Notifications stars activ&eacute;es — cliquer pour d&eacute;sactiver")
+    } else {
+        ("&#128277;", "stat-btn stat-off", "Notifications stars d&eacute;sactiv&eacute;es — cliquer pour activer")
+    };
+    let (fork_bell, fork_class, fork_tip) = if cfg.notify_forks {
+        ("&#128276;", "stat-btn", "Notifications forks activ&eacute;es — cliquer pour d&eacute;sactiver")
+    } else {
+        ("&#128277;", "stat-btn stat-off", "Notifications forks d&eacute;sactiv&eacute;es — cliquer pour activer")
+    };
+
     format!(
         r#"<div class="card">
   <div class="card-header">
@@ -262,9 +320,26 @@ fn render_card(repo: &RepoState, full_name: &str) -> String {
   </div>
   <p class="desc">{desc}</p>
   <div class="stats">
-    <div class="stat"><span class="val">{stars}</span><span class="lbl">&#11088; Stars</span></div>
-    <div class="stat"><span class="val">{forks}</span><span class="lbl">&#129380; Forks</span></div>
-    <div class="stat"><span class="val">{release}</span><span class="lbl">&#127991; Release</span></div>
+    <form method="POST" action="/repos/toggle" class="stat-form">
+      <input type="hidden" name="full_name" value="{name}">
+      <input type="hidden" name="field" value="stars">
+      <button type="submit" class="{star_class}" title="{star_tip}">
+        <span class="val">{stars}</span>
+        <span class="lbl">&#11088; Stars {star_bell}</span>
+      </button>
+    </form>
+    <form method="POST" action="/repos/toggle" class="stat-form">
+      <input type="hidden" name="full_name" value="{name}">
+      <input type="hidden" name="field" value="forks">
+      <button type="submit" class="{fork_class}" title="{fork_tip}">
+        <span class="val">{forks}</span>
+        <span class="lbl">&#129380; Forks {fork_bell}</span>
+      </button>
+    </form>
+    <div class="stat">
+      <span class="val">{release}</span>
+      <span class="lbl">&#127991; Release</span>
+    </div>
   </div>
   <div class="meta">V&eacute;rifi&eacute; : {checked}</div>
 </div>"#,
@@ -275,6 +350,12 @@ fn render_card(repo: &RepoState, full_name: &str) -> String {
         forks = repo.forks,
         release = release,
         checked = repo.last_checked.format("%Y-%m-%d %H:%M UTC"),
+        star_class = star_class,
+        star_tip = star_tip,
+        star_bell = star_bell,
+        fork_class = fork_class,
+        fork_tip = fork_tip,
+        fork_bell = fork_bell,
     )
 }
 
@@ -318,7 +399,7 @@ fn render_notification(n: &Notification) -> String {
     )
 }
 
-// ── JSON API ─────────────────────────────────────────────────────────────────
+// ── JSON API ──────────────────────────────────────────────────────────────────
 
 async fn api_repos(state: web::Data<Arc<Mutex<AppState>>>) -> impl Responder {
     let repos: Vec<RepoState> = {

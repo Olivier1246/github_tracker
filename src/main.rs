@@ -46,7 +46,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         app_config.telegram_chat_id.clone(),
     ));
 
-    // Monitoring loop — reads repos dynamically from state
     {
         let state = Arc::clone(&shared_state);
         let github = Arc::clone(&github_client);
@@ -69,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     web::start_web_server(
         Arc::clone(&shared_state),
+        Arc::clone(&telegram_client),
         app_config.web_host,
         app_config.web_port,
     )
