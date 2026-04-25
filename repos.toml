@@ -1,0 +1,44 @@
+# ============================================================
+# GitHub Tracker — Liste des dépôts à surveiller
+# ============================================================
+#
+# Ajoutez autant de blocs [[repos]] que nécessaire.
+#
+# Champs disponibles :
+#   owner           (requis) - Propriétaire du dépôt (ex: "rust-lang")
+#   repo            (requis) - Nom du dépôt          (ex: "rust")
+#   notify_releases (bool)   - Notifier les nouvelles releases  [défaut: true]
+#   notify_stars    (bool)   - Notifier les changements d'étoiles [défaut: true]
+#   notify_forks    (bool)   - Notifier les changements de forks  [défaut: false]
+#
+# URL GitHub correspondante : https://github.com/{owner}/{repo}
+# ============================================================
+
+[[repos]]
+owner = "rust-lang"
+repo = "rust"
+notify_releases = true
+notify_stars = true
+notify_forks = false
+
+[[repos]]
+owner = "tokio-rs"
+repo = "tokio"
+notify_releases = true
+notify_stars = false
+notify_forks = false
+
+[[repos]]
+owner = "actix"
+repo = "actix-web"
+notify_releases = true
+notify_stars = false
+notify_forks = false
+
+# Exemple désactivé — décommentez et adaptez
+# [[repos]]
+# owner = "votre-org"
+# repo = "votre-depot"
+# notify_releases = true
+# notify_stars = true
+# notify_forks = true

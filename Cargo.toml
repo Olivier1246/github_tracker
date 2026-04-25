@@ -1,0 +1,27 @@
+[package]
+name = "github-tracker"
+version = "0.1.0"
+edition = "2021"
+description = "GitHub repository monitor with Telegram notifications and LAN web interface"
+authors = ["GitHub Tracker"]
+
+[[bin]]
+name = "github-tracker"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dotenvy = "0.15"
+actix-web = "4"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
