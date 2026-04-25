@@ -1,31 +1,50 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::models::{Notification, RepoState};
+use crate::models::{Notification, RepoConfig, RepoState};
 
 pub type SharedState = Arc<Mutex<AppState>>;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AppState {
-    pub repos: HashMap<String, RepoState>,
+    pub repos: Vec<RepoConfig>,
+    pub repo_states: HashMap<String, RepoState>,
     pub notifications: Vec<Notification>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(repos: Vec<RepoConfig>) -> Self {
+        Self {
+            repos,
+            repo_states: HashMap::new(),
+            notifications: Vec::new(),
+        }
+    }
+
+    // Returns false if repo already exists
+    pub fn add_repo(&mut self, config: RepoConfig) -> bool {
+        let full = config.full_name();
+        if self.repos.iter().any(|r| r.full_name() == full) {
+            return false;
+        }
+        self.repos.push(config);
+        true
+    }
+
+    pub fn remove_repo(&mut self, full_name: &str) {
+        self.repos.retain(|r| r.full_name() != full_name);
+        self.repo_states.remove(full_name);
     }
 
     pub fn add_notification(&mut self, notif: Notification) {
         self.notifications.push(notif);
-        // Keep only the 100 most recent notifications
         if self.notifications.len() > 100 {
-            let drain_count = self.notifications.len() - 100;
-            self.notifications.drain(0..drain_count);
+            let drain = self.notifications.len() - 100;
+            self.notifications.drain(0..drain);
         }
     }
 
-    pub fn update_repo(&mut self, state: RepoState) {
-        self.repos.insert(state.full_name.clone(), state);
+    pub fn update_repo_state(&mut self, state: RepoState) {
+        self.repo_states.insert(state.full_name.clone(), state);
     }
 }

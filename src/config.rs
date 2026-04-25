@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use crate::models::ReposConfig;
+use crate::models::{RepoConfig, ReposConfig};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -51,4 +51,16 @@ pub fn load_repos(path: &str) -> Result<ReposConfig, String> {
         .map_err(|e| format!("Impossible de lire {}: {}", path, e))?;
     toml::from_str(&content)
         .map_err(|e| format!("Impossible de parser {}: {}", path, e))
+}
+
+pub fn save_repos(path: &str, repos: &[RepoConfig]) -> Result<(), String> {
+    let config = ReposConfig { repos: repos.to_vec() };
+    let body = toml::to_string_pretty(&config)
+        .map_err(|e| format!("Erreur de sérialisation: {}", e))?;
+    let content = format!(
+        "# Géré automatiquement par l'interface web GitHub Tracker\n\n{}",
+        body
+    );
+    fs::write(path, content)
+        .map_err(|e| format!("Impossible d'écrire {}: {}", path, e))
 }
